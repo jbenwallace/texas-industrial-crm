@@ -1,10 +1,120 @@
--- CreateEnum
-CREATE TYPE "DealPhase" AS ENUM ('LEASES_CONTRACTS', 'WORKING_DEALS', 'TRACKING_DEALS', 'COLD');
-CREATE TYPE "DealType" AS ENUM ('TREP', 'LAND', 'LISTING', 'INVESTMENT_SALES');
-CREATE TYPE "PursuitPhase" AS ENUM ('NOT_STARTED', 'IN_PROGRESS', 'COMPLETED');
-CREATE TYPE "PursuitType" AS ENUM ('TREP', 'LAND', 'LISTING', 'INVESTMENT_SALES', 'ACQUISITION');
-CREATE TYPE "OccupierStatus" AS ENUM ('IN_PROGRESS', 'LOST', 'WON');
-CREATE TYPE "OccupierPriority" AS ENUM ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW');
-CREATE TYPE "DealStage" AS ENUM ('EARLY_TALKS', 'ENDED', 'PROSPECT', 'COMPLETED');
-CREATE TYPE "CapitalType" AS ENUM ('INVESTOR_OWNER', 'DEVELOPER');
-CREATE TYPE "TaskStatus" AS ENUM ('PENDING', 'COMPLETE');
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DealPhase {
+  LEASES_CONTRACTS
+  WORKING_DEALS
+  TRACKING_DEALS
+  COLD
+}
+
+enum DealType {
+  TREP
+  LAND
+  LISTING
+  INVESTMENT_SALES
+}
+
+enum PursuitPhase {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum PursuitType {
+  TREP
+  LAND
+  LISTING
+  INVESTMENT_SALES
+  ACQUISITION
+}
+
+enum OccupierStatus {
+  IN_PROGRESS
+  LOST
+  WON
+}
+
+enum OccupierPriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum DealStage {
+  EARLY_TALKS
+  ENDED
+  PROSPECT
+  COMPLETED
+}
+
+enum CapitalType {
+  INVESTOR_OWNER
+  DEVELOPER
+}
+
+enum TaskStatus {
+  PENDING
+  COMPLETE
+}
+
+model User {
+  id               Int        @id @default(autoincrement())
+  name             String
+  email            String     @unique
+  phone            String     @default("")
+  jobTitle         String?
+  roleId           Int?
+  createdAt        DateTime   @default(now())
+  dealsAsLead      Deal[]     @relation("LeadBroker")
+  dealsAsBroker    Deal[]     @relation("Broker")
+  pursuits         Pursuit[]
+  tasks            Task[]
+  occupiersPrimary Occupier[] @relation("PrimaryBroker")
+  occupiersBroker  Occupier[] @relation("SecondaryBroker")
+}
+
+model Occupier {
+  id                  Int              @id @default(autoincrement())
+  companyName         String
+  priority            OccupierPriority @default(LOW)
+  currentAddress      String?
+  headquartersAddress String?
+  sizeOfSpace         Int?
+  leaseExpiration     DateTime?
+  nextContact         DateTime?
+  occupierStatus      OccupierStatus   @default(IN_PROGRESS)
+  dateStarted         DateTime?
+  dealStage           DealStage        @default(EARLY_TALKS)
+  industry            String?          @default("-")
+  isDeleted           Boolean          @default(false)
+  primaryBrokerId     Int?
+  brokerId            Int?
+  createdAt           DateTime         @default(now())
+  primaryBroker       User?            @relation("PrimaryBroker", fields: [primaryBrokerId], references: [id])
+  broker              User?            @relation("SecondaryBroker", fields: [brokerId], references: [id])
+  contacts            Contact[]
+  deals               Deal[]
+}
+
+model Contact {
+  id         Int       @id @default(autoincrement())
+  name       String
+  jobTitle   String    @default("")
+  phone      String    @default("")
+  email      String    @default("")
+  occupierId Int?
+  capitalId  Int?
+  occupier   Occupier? @relation(fields: [occupierId], references: [id])
+  capital    Capital?  @relation(fields: [capitalId], references: [id])
+}
+
+model Capital {
+  id          Int
