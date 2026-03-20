@@ -1,0 +1,310 @@
+-- ============================================================
+-- MIGRATION GUIDE: Old MySQL → New PostgreSQL Schema
+-- Live Oak CRE CRM
+--
+-- Run in this ORDER. Each section is safe to re-run.
+-- Take a full backup before running anything.
+-- ============================================================
+
+-- ─── PHASE 1: Companies (merges capitals + occupiers) ────────────────────────
+--
+-- Old system had separate `capitals` and `occupiers` tables.
+-- New system has `companies` with optional `occupier_profiles` / `capital_profiles`.
+
+INSERT INTO companies (id, name, type, status, owner_code, created_at, updated_at)
+SELECT
+  id,
+  company_name,
+  'Owner/Investor',
+  status,
+  owner_code,
+  NOW(),
+  NOW()
+FROM capitals;
+
+-- Occupiers become companies too
+INSERT INTO companies (name, type, status, created_at, updated_at)
+SELECT
+  company_name,
+  'Tenant',
+  CASE occupier_status
+    WHEN 'In Progress' THEN 'Active'
+    WHEN 'Won' THEN 'Active'
+    WHEN 'Lost' THEN 'Inactive'
+  END,
+  NOW(),
+  NOW()
+FROM occupiers;
+
+-- Create occupier_profiles for occupier companies
+INSERT INTO occupier_profiles (
+  company_id, priority, current_address, headquarters_address,
+  size_of_space, lease_expiration, next_contact, occupier_status,
+  date_started, deal_stage, primary_broker_id, broker_id, sale_deal_interest
+)
+SELECT
+  c.id,
+  o.priority,
+  o.current_address,
+  o.headquarters_address,
+  o.size_of_space,
+  o.lease_expiration,
+  o.next_contact,
+  CASE o.occupier_status
+    WHEN 'In Progress' THEN 'IN_PROGRESS'
+    WHEN 'Won' THEN 'WON'
+    WHEN 'Lost' THEN 'LOST'
+  END,
+  o.date_started,
+  CASE o.deal_stage
+    WHEN 'Early Talks' THEN 'EARLY_TALKS'
+    WHEN 'Ended' THEN 'ENDED'
+    WHEN 'Prospect' THEN 'PROSPECT'
+    WHEN 'Completed' THEN 'COMPLETED'
+  END,
+  o.primary_broker_id,
+  o.broker_id,
+  COALESCE(o.sale_deals, false)
+FROM occupiers o
+JOIN companies c ON c.name = o.company_name AND c.type = 'Tenant';
+
+-- Create capital_profiles
+INSERT INTO capital_profiles (company_id, type)
+SELECT
+  c.id,
+  CASE cap.type
+    WHEN 'Investor/Owner' THEN 'INVESTOR_OWNER'
+    WHEN 'Developer' THEN 'DEVELOPER'
+  END
+FROM capitals cap
+JOIN companies c ON c.id = cap.id;
+
+-- ─── PHASE 2: Contacts ────────────────────────────────────────────────────────
+--
+-- Old contacts had occupier_id or capital_id linking them.
+-- New contacts link to company_id.
+
+INSERT INTO contacts (id, name, job_title, email, phone, image_url, company_id, created_at, updated_at)
+SELECT
+  con.id,
+  con.name,
+  NULLIF(con.job_title, ''),
+  NULLIF(con.email, ''),
+  NULLIF(con.phone, ''),
+  con.image,
+  COALESCE(
+    -- prefer occupier company match
+    (SELECT c.id FROM companies c
+     JOIN occupier_profiles op ON op.company_id = c.id
+     WHERE op.id = con.occupier_id
+     LIMIT 1),
+    -- fall back to capital company
+    (SELECT c.id FROM companies c
+     WHERE c.id = con.capital_id
+     LIMIT 1)
+  ),
+  NOW(),
+  NOW()
+FROM contacts con;
+
+-- ─── PHASE 3: Properties ──────────────────────────────────────────────────────
+--
+-- Properties map 1:1. The new schema adds the Space layer on top.
+
+INSERT INTO properties (
+  id, name, project_name, costar_id, submarket, total_sf, building_size,
+  clear_height, ceiling_ht, number_of_loading_docks, dock_doors, drive_ins,
+  truck_court, trailer_parks, number_of_parking_spaces, parking_ratio,
+  land_area_ac, configuration, building_depth, building_depth_score,
+  power, sprinkler_type, zoning, tenancy, rail, freezer_cooler,
+  ability_to_secure, shared_tc, queuing_lanes_or, in_cda, tracked_bldg,
+  competitive_set, location_proximity, access, site_circulation,
+  for_sale, image_url, true_owner_name, developer_name,
+  quoted_rates, avg_rent_direct_industrial, opex, opex_my, ti, ti_my,
+  normalized_rate, percent_leased, vacancy_percent, available_sf,
+  rental_rate, leasing_company_name, leasing_company_contact,
+  created_at, updated_at
+)
+SELECT
+  id, name, project_name, CAST(costar_id AS VARCHAR), submarket_name,
+  total_sf, building_size,
+  clear_height, ceiling_ht, number_of_loading_docks, dock_doors, drive_ins,
+  truck_court, trailer_parks, number_of_parking_spaces, parking_ratio,
+  land_area_ac, configuration, building_depth, building_depth_score,
+  power, sprinkler_type, zoning, tenancy, rail, freezer_cooler,
+  ability_to_secure, shared_tc, queuing_lanes_or,
+  in_cda, tracked_bldg, competitive_set, location_proximity, access,
+  site_circulation, for_sale, image_url, true_owner_name, developer_name,
+  quoted_rates, avg_rent_direct_industrial, opex, opex_my, ti, ti_my,
+  normalized_rate, percent_leased, vacancy_percent, available_sf,
+  rental_rate, leasing_company_name, leasing_company_contact,
+  COALESCE(updated_at, NOW()), COALESCE(updated_at, NOW())
+FROM properties;
+
+-- ─── PHASE 4: Seed Default Spaces (one per property) ─────────────────────────
+--
+-- Every property gets a "Default Space" placeholder.
+-- Existing deals and vacancies will link here until brokers clean up.
+
+INSERT INTO spaces (property_id, name, known_space, sf, created_at, updated_at)
+SELECT id, 'Default Space', false, available_sf, NOW(), NOW()
+FROM properties;
+
+-- ─── PHASE 5: Deals ───────────────────────────────────────────────────────────
+--
+-- Map old deals to new. property_id now direct (not via building_id).
+-- space_id points to the placeholder space created above.
+
+INSERT INTO deals (
+  id, name, property_id, space_id, company_id, lead_broker_id, broker_id,
+  sf, rate, term, free_rent, ti, ca, projected_date, pending_fee,
+  prob_percentage, weighted_average, purchase_price,
+  phase, type, created_at, updated_at
+)
+SELECT
+  d.id,
+  d.name,
+  d.building_id,
+  -- Link to placeholder space for this property
+  (SELECT s.id FROM spaces s WHERE s.property_id = d.building_id AND s.known_space = false LIMIT 1),
+  -- Map occupier_id → company_id via occupier_profiles
+  (SELECT c.id FROM companies c
+   JOIN occupier_profiles op ON op.company_id = c.id
+   WHERE op.id = d.occupier_id LIMIT 1),
+  d.lead_broker_id,
+  d.broker_id,
+  d.sf,
+  d.rate,
+  d.term,
+  d.free_rent,
+  d.ti,
+  d.ca,
+  d.projected_date,
+  d.pending_fee,
+  d.prob_percentage,
+  d.weighted_average,
+  d.purchase_price,
+  CASE d.phase
+    WHEN 'Leases/Contracts'  THEN 'LEASES_CONTRACTS'
+    WHEN 'Working Deals'     THEN 'WORKING_DEALS'
+    WHEN 'Tracking Deals'    THEN 'TRACKING_DEALS'
+    WHEN 'Cold'              THEN 'COLD'
+    ELSE 'TRACKING_DEALS'
+  END,
+  CASE d.type
+    WHEN 'TREP'                     THEN 'TREP'
+    WHEN 'Land'                     THEN 'LAND'
+    WHEN 'Listing'                  THEN 'LISTING'
+    WHEN 'Investment Sales Deals'   THEN 'INVESTMENT_SALES'
+    ELSE NULL
+  END,
+  NOW(),
+  NOW()
+FROM deals d;
+
+-- ─── PHASE 6: Pursuits ────────────────────────────────────────────────────────
+
+INSERT INTO pursuits (
+  id, name, broker_id, company_id, asset_analysis_phase, type,
+  total_sf, submarket, costar_id, is_created_by_occupier,
+  created_at, updated_at
+)
+SELECT
+  id,
+  name,
+  broker_id,
+  -- Map capital_id → company_id
+  capital_id,
+  CASE asset_analysis_phase
+    WHEN 'Not Started'  THEN 'NOT_STARTED'
+    WHEN 'In Progress'  THEN 'IN_PROGRESS'
+    WHEN 'Completed'    THEN 'COMPLETED'
+  END,
+  CASE type
+    WHEN 'TREP'                   THEN 'TREP'
+    WHEN 'Land'                   THEN 'LAND'
+    WHEN 'Listing'                THEN 'LISTING'
+    WHEN 'Investment Sales Deals' THEN 'INVESTMENT_SALES'
+    WHEN 'Acquisition'            THEN 'ACQUISITION'
+    ELSE 'TREP'
+  END,
+  total_sf,
+  submarket,
+  costar_id,
+  is_created_by_occupier,
+  COALESCE(created_at, NOW()),
+  NOW()
+FROM pursuits;
+
+-- ─── PHASE 7: Listings ────────────────────────────────────────────────────────
+
+INSERT INTO listings (id, name, created_at, updated_at)
+SELECT id, name, NOW(), NOW()
+FROM listings;
+
+-- ─── PHASE 8: Events ──────────────────────────────────────────────────────────
+
+INSERT INTO events (id, name, date, created_at, updated_at)
+SELECT id, name, date, NOW(), NOW()
+FROM events;
+
+INSERT INTO event_capital_relations (event_id, capital_profile_id, invitation, attendance)
+SELECT ecr.event_id, cp.id, ecr.invitation, ecr.attendance
+FROM event_capital_relations ecr
+JOIN capital_profiles cp ON cp.company_id = ecr.capital_id;
+
+-- ─── PHASE 9: Tasks ───────────────────────────────────────────────────────────
+
+INSERT INTO tasks (id, user_id, task_description, status, is_visible, entity_id, created_at, updated_at)
+SELECT
+  id,
+  broker_id,
+  task_description,
+  CASE status
+    WHEN 'completed' THEN 'COMPLETED'
+    WHEN 'in_progress' THEN 'IN_PROGRESS'
+    ELSE 'PENDING'
+  END,
+  COALESCE(is_visible, true),
+  entity_id,
+  NOW(),
+  NOW()
+FROM tasks;
+
+-- ─── PHASE 10: Documents (files) ─────────────────────────────────────────────
+
+INSERT INTO documents (id, name, url, format, entity_id, entity_type, created_at, updated_at)
+SELECT
+  id,
+  name,
+  url,
+  format,
+  entity_id,
+  CASE
+    WHEN entity_name LIKE '%Pursuit%' THEN 'Pursuit'
+    WHEN entity_name LIKE '%Property%' THEN 'Property'
+    ELSE entity_name
+  END,
+  COALESCE(created_at, NOW()),
+  COALESCE(updated_at, NOW())
+FROM files;
+
+-- ─── PHASE 11: Ranking Criteria (CDA) ────────────────────────────────────────
+
+INSERT INTO ranking_criteria (
+  id, type, value, score, calculated_score, weight,
+  score2, calculated_score2, score3, calculated_score3, formula_parameters
+)
+SELECT
+  id, type, value, score, calculated_score, weight,
+  score2, calculated_score2, score3, calculated_score3,
+  formula_parameters::jsonb
+FROM ranking_criteria;
+
+-- ─── Done ─────────────────────────────────────────────────────────────────────
+-- After running, verify:
+--   SELECT COUNT(*) FROM companies;       -- should match capitals + occupiers
+--   SELECT COUNT(*) FROM properties;      -- should match old properties
+--   SELECT COUNT(*) FROM spaces;          -- should be >= properties (1 per property)
+--   SELECT COUNT(*) FROM deals;           -- should match old deals
+--   SELECT COUNT(*) FROM contacts;        -- should match old contacts
