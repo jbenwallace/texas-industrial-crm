@@ -1,10 +1,193 @@
--- CreateEnum
-CREATE TYPE "DealPhase" AS ENUM ('LEASES_CONTRACTS', 'WORKING_DEALS', 'TRACKING_DEALS', 'COLD');
-CREATE TYPE "DealType" AS ENUM ('TREP', 'LAND', 'LISTING', 'INVESTMENT_SALES');
-CREATE TYPE "PursuitPhase" AS ENUM ('NOT_STARTED', 'IN_PROGRESS', 'COMPLETED');
-CREATE TYPE "PursuitType" AS ENUM ('TREP', 'LAND', 'LISTING', 'INVESTMENT_SALES', 'ACQUISITION');
-CREATE TYPE "OccupierStatus" AS ENUM ('IN_PROGRESS', 'LOST', 'WON');
-CREATE TYPE "OccupierPriority" AS ENUM ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW');
-CREATE TYPE "DealStage" AS ENUM ('EARLY_TALKS', 'ENDED', 'PROSPECT', 'COMPLETED');
-CREATE TYPE "CapitalType" AS ENUM ('INVESTOR_OWNER', 'DEVELOPER');
-CREATE TYPE "TaskStatus" AS ENUM ('PENDING', 'COMPLETE');
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DealPhase {
+  LEASES_CONTRACTS
+  WORKING_DEALS
+  TRACKING_DEALS
+  COLD
+}
+
+enum DealType {
+  TREP
+  LAND
+  LISTING
+  INVESTMENT_SALES
+}
+
+enum PursuitPhase {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum PursuitType {
+  TREP
+  LAND
+  LISTING
+  INVESTMENT_SALES
+  ACQUISITION
+}
+
+enum OccupierStatus {
+  IN_PROGRESS
+  LOST
+  WON
+}
+
+enum OccupierPriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum DealStage {
+  EARLY_TALKS
+  ENDED
+  PROSPECT
+  COMPLETED
+}
+
+enum CapitalType {
+  INVESTOR_OWNER
+  DEVELOPER
+}
+
+enum TaskStatus {
+  PENDING
+  COMPLETE
+}
+
+model User {
+  id     Int    @id @default(autoincrement())
+  name   String
+  email  String @unique
+  phone  String @default("")
+  roleId Int?
+
+  occupiersAsPrimary Occupier[] @relation("PrimaryBroker")
+  occupiersAsBroker  Occupier[] @relation("OccupierBroker")
+  dealsAsLead        Deal[]     @relation("LeadBroker")
+  dealsAsBroker      Deal[]     @relation("DealBroker")
+  pursuits           Pursuit[]  @relation("PursuitBroker")
+  tasks              Task[]     @relation("TaskBroker")
+}
+
+model Capital {
+  id          Int         @id @default(autoincrement())
+  companyName String
+  ownerCode   String?
+  status      String      @default("Active")
+  type        CapitalType
+
+  contacts Contact[]
+  deals    Deal[]
+  pursuits Pursuit[]
+}
+
+model Occupier {
+  id                  Int              @id @default(autoincrement())
+  companyName         String
+  priority            OccupierPriority @default(LOW)
+  currentAddress      String?
+  headquartersAddress String?
+  sizeOfSpace         Int?
+  leaseExpiration     DateTime?
+  nextContact         DateTime?
+  occupierStatus      OccupierStatus   @default(IN_PROGRESS)
+  dateStarted         DateTime?
+  dealStage           DealStage        @default(EARLY_TALKS)
+  industry            String?
+  isDeleted           Boolean          @default(false)
+
+  primaryBrokerId Int?
+  primaryBroker   User? @relation("PrimaryBroker", fields: [primaryBrokerId], references: [id])
+  brokerId        Int?
+  broker          User? @relation("OccupierBroker", fields: [brokerId], references: [id])
+
+  contacts Contact[]
+  deals    Deal[]
+}
+
+model Contact {
+  id       Int    @id @default(autoincrement())
+  name     String
+  jobTitle String @default("")
+  phone    String @default("")
+  email    String @default("")
+
+  occupierId Int?
+  occupier   Occupier? @relation(fields: [occupierId], references: [id])
+  capitalId  Int?
+  capital    Capital?  @relation(fields: [capitalId], references: [id])
+}
+
+model Pursuit {
+  id                 Int          @id @default(autoincrement())
+  name               String
+  type               PursuitType
+  assetAnalysisPhase PursuitPhase @default(NOT_STARTED)
+  totalSf            Int?
+  submarket          String?
+
+  brokerId  Int?
+  broker    User?    @relation("PursuitBroker", fields: [brokerId], references: [id])
+  capitalId Int?
+  capital   Capital? @relation(fields: [capitalId], references: [id])
+
+  deals Deal[]
+}
+
+model Deal {
+  id              Int       @id @default(autoincrement())
+  name            String
+  phase           DealPhase
+  type            DealType?
+  sf              Int?
+  rate            Float?
+  term            Int?
+  freeRent        Float?
+  ti              Float?
+  projectedDate   DateTime?
+  pendingFee      Float?
+  probPercentage  Int?
+  purchasePrice   Float?
+  ca              Boolean   @default(false)
+  comments        String?
+  nextStep        String?
+  weightedAverage Float?
+
+  occupierId   Int?
+  occupier     Occupier? @relation(fields: [occupierId], references: [id])
+  capitalId    Int?
+  capital      Capital?  @relation(fields: [capitalId], references: [id])
+  leadBrokerId Int?
+  leadBroker   User?     @relation("LeadBroker", fields: [leadBrokerId], references: [id])
+  brokerId     Int?
+  broker       User?     @relation("DealBroker", fields: [brokerId], references: [id])
+  pursuitId    Int?
+  pursuit      Pursuit?  @relation(fields: [pursuitId], references: [id])
+}
+
+model Task {
+  id          Int        @id @default(autoincrement())
+  description String     @default("")
+  status      TaskStatus
+  isVisible   Boolean    @default(true)
+  entityId    Int?
+
+  brokerId Int?
+  broker   User? @relation("TaskBroker", fields: [brokerId], references: [id])
+}
+
+model Note {
+  id   Int    @id @default(autoincrement())
+  text String @default("")
+}
